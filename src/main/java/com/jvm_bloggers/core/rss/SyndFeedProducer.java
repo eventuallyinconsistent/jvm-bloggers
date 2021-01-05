@@ -1,130 +1,74 @@
 package com.jvm_bloggers.core.rss;
 
-import com.google.common.collect.ImmutableMap;
-import com.jvm_bloggers.core.data_fetching.http.ProtocolSwitchingAwareConnectionRedirectHandler;
+import com.google.common.collect.Lists;
+import com.jvm_bloggers.core.rss.fetchers.RssFetcher;
+import com.jvm_bloggers.core.rss.fetchers.WgetRssFetcherWithIllegalCharsEscaper;
 import com.jvm_bloggers.core.utils.Validators;
 import com.rometools.rome.feed.synd.SyndFeed;
-import com.rometools.rome.io.SyndFeedInput;
-import com.rometools.rome.io.XmlReader;
+import io.vavr.collection.List;
+import io.vavr.collection.Seq;
+import io.vavr.collection.Stream;
+import io.vavr.control.Option;
+import io.vavr.control.Try;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.io.IOUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.io.BufferedInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.URL;
-import java.net.URLConnection;
-import java.security.KeyManagementException;
-import java.security.NoSuchAlgorithmException;
-import java.security.cert.X509Certificate;
-import java.util.Map;
-import java.util.Optional;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.ZipException;
-
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+import java.util.stream.Collectors;
 
 @Component
 @Slf4j
 public class SyndFeedProducer {
 
-    private static final String FAKE_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) "
-        + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2227.1 Safari/537.36";
+    private final Seq<RssFetcher> fetchers;
 
-    private final ProtocolSwitchingAwareConnectionRedirectHandler redirectHandler =
-        new ProtocolSwitchingAwareConnectionRedirectHandler();
-
-    public Optional<SyndFeed> createFor(String rssUrl) {
-        Optional<SyndFeed> rssFeed = createInADefaultWay(rssUrl);
-        
-        if (rssFeed.isPresent()) {
-            return rssFeed;
-        }
-        return createWithoutSslVerification(rssUrl);
+    @Autowired
+    public SyndFeedProducer(java.util.List<RssFetcher> fetchers) {
+        this.fetchers = Stream.ofAll(fetchers);
+        log.info(
+            "Creating {} with following fetchers {}",
+            this.getClass().getSimpleName(),
+            stringifyFetcherClassNames(fetchers)
+        );
     }
 
-    public Optional<String> validUrlFromRss(String rss) {
-        Optional<String> url = createFor(rss).map(SyndFeed::getLink);
+    private String stringifyFetcherClassNames(java.util.List<RssFetcher> fetchers) {
+        return List
+            .ofAll(fetchers).map(f -> f.getClass().getSimpleName())
+            .collect(Collectors.joining(", "));
+    }
+
+    public Option<SyndFeed> createFor(String rssUrl) {
+        Option<SyndFeed> syndFeed = fetchers
+            .map(fetcher -> fetcher.fetch(rssUrl))
+            .find(Try::isSuccess)
+            .flatMap(Try::toOption);
+        if (syndFeed.isEmpty()) {
+            log.warn("Error: Unable to fetch RSS for {}", rssUrl);
+        }
+        return syndFeed;
+    }
+
+    public Option<String> validUrlFromRss(String rss) {
+        Option<String> url = createFor(rss).map(SyndFeed::getLink);
         return url.filter(Validators::isUrlValid);
     }
 
-    private Optional<SyndFeed> createInADefaultWay(String rssUrl) {
-        URLConnection urlConnection = null;
-        InputStream inputStream = null;
-        try {
-            urlConnection = new URL(rssUrl).openConnection();
-            final Map<String, String> headers =
-                    ImmutableMap.of("User-Agent", FAKE_USER_AGENT);
-            urlConnection = redirectHandler.handle(urlConnection, headers);
+    // Helper method to test how troublesome RSS feeds are behaving
+    public static void main(String[] args) {
+        SyndFeedProducer feedProducer = new SyndFeedProducer(
+            Lists.newArrayList(
+                new WgetRssFetcherWithIllegalCharsEscaper()
+            )
+        );
 
-            inputStream = wrapToGzipStreamIfNeeded(urlConnection.getInputStream());
-            return Optional.of(new SyndFeedInput().build(new XmlReader(inputStream)));
-        } catch (Exception ex) {
-            log.warn("Error during fetching RSS {} url", rssUrl, ex);
-            return Optional.empty();
-        } finally {
-            IOUtils.closeQuietly(inputStream);
-            IOUtils.close(urlConnection);
-        }
+        String rssUrl = "https://wrrathy.github.io/feed.xml";
+
+        Option<SyndFeed> syndFeed = feedProducer.createFor(rssUrl);
+        System.out.println("Rss = " + rssUrl);
+        System.out.println("Url = " + syndFeed.get().getLink());
+        System.out.println("Url is valid = " + Validators.isUrlValid(syndFeed.get().getLink()));
+        System.out.println("Number of articles in feed = " + syndFeed.get().getEntries().size());
     }
 
-    private Optional<SyndFeed> createWithoutSslVerification(String rssUrl) {
-        URLConnection urlConnection = null;
-        InputStream inputStream = null;
-        try {
-            urlConnection = new URL(rssUrl).openConnection();
-            final Map<String, String> headers =
-                    ImmutableMap.of("User-Agent", FAKE_USER_AGENT);
-            urlConnection = redirectHandler.handle(urlConnection, headers);
-            configureHttpsConnectionToTrustAnyone(urlConnection);
-            inputStream = wrapToGzipStreamIfNeeded(urlConnection.getInputStream());
-            return Optional.of(new SyndFeedInput().build(new XmlReader(inputStream)));
-        } catch (Exception ex) {
-            log.warn("Error during fetching RSS without https check for {} url", rssUrl, ex);
-            return Optional.empty();
-        } finally {
-            IOUtils.closeQuietly(inputStream);
-            IOUtils.close(urlConnection);
-        }
-    }
-
-    private void configureHttpsConnectionToTrustAnyone(URLConnection urlConnection) 
-            throws NoSuchAlgorithmException, KeyManagementException {
-        if (urlConnection instanceof HttpsURLConnection) {
-            HttpsURLConnection httpsConnection = (HttpsURLConnection) urlConnection;
-
-            TrustManager[] trustAllCerts = new TrustManager[] { new X509TrustManager() {
-                public X509Certificate[] getAcceptedIssuers() {
-                    return null;
-                }
-
-                public void checkClientTrusted(X509Certificate[] certs, String authType) {
-                }
-
-                public void checkServerTrusted(X509Certificate[] certs, String authType) {
-                }
-            } };
-            SSLContext sc = SSLContext.getInstance("TLSv1.2");
-            sc.init(null, trustAllCerts, new java.security.SecureRandom());
-            httpsConnection.setSSLSocketFactory(sc.getSocketFactory());
-            httpsConnection.setHostnameVerifier((hostname, session) -> true);
-        }
-    }
-
-    private InputStream wrapToGzipStreamIfNeeded(InputStream inputStream) throws IOException {
-        if (!inputStream.markSupported()) {
-            inputStream = new BufferedInputStream(inputStream);
-        }
-        inputStream.mark(1000);
-        try {
-            return new GZIPInputStream(inputStream);
-        } catch (ZipException ex) {
-            inputStream.reset();
-            return inputStream;
-        }
-    }
 }

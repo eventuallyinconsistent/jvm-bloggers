@@ -3,6 +3,7 @@ package com.jvm_bloggers.core.data_fetching.blog_posts;
 import com.jvm_bloggers.entities.blog.Blog;
 import com.jvm_bloggers.entities.blog_post.BlogPost;
 import com.jvm_bloggers.utils.NowProvider;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -23,7 +24,7 @@ public class BlogPostFactory {
     }
 
     public BlogPost create(String title, String url, LocalDateTime publishedDate, Blog blog) {
-        Boolean approved = blog.getDefaultApprovedValue();
+        Boolean approved = blog.getInitialApprovedValue();
         return BlogPost.builder()
             .title(title)
             .url(url)

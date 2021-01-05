@@ -12,7 +12,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-
 @Component
 @Slf4j
 public class EmailsWithNewIssueProducer {
@@ -44,9 +43,9 @@ public class EmailsWithNewIssueProducer {
         NewsletterIssue newIssue = newIssuePublished.getNewsletterIssue();
         String emailTitle = prepareEmailTitle(newIssue);
 
-        mailingAddressRepository.findAll().stream().forEach(mailingAddress -> {
-            saveEmailWithNewsletterIssue(newIssue, emailTitle, mailingAddress.getAddress());
-        });
+        mailingAddressRepository.findAll().stream().forEach(mailingAddress ->
+            saveEmailWithNewsletterIssue(newIssue, emailTitle, mailingAddress.getAddress())
+        );
     }
 
     public void saveEmailWithNewsletterIssue(NewsletterIssue newIssue, String emailTitle,
